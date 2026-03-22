@@ -80,7 +80,7 @@ void main(void){
 	        int32_t reflectance_pos = Reflectance_Position(reflectance_val);
 	        int32_t reflectance_pos_abs = abs(reflectance_pos);
 
-	        uint8_t index = 2;
+	        static uint8_t index = 2;
 	        static int32_t last_pos = 0;
 	        static uint8_t lost_count = 0;
 	        // Categorize into degree of turn
@@ -114,9 +114,9 @@ void main(void){
 
 	        if (lost_count >= 2){
 	            if (last_pos > 0) {
-	                current = LL;  // was turning left
+	                current = LR;
                 } else {
-                    current = LR;  // was turning right
+                    current = LL;
                 }
 	            lost_count = 0;
 	        } else{
