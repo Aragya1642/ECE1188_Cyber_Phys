@@ -10,15 +10,12 @@
 #include <stdlib.h>
 
 // Declare global variables
-const uint16_t MAX_PWM = 5000;
+const uint16_t MAX_PWM = 7000;
 volatile uint8_t reflectance_val;
 volatile uint8_t bump_val;
 volatile uint8_t data_ready;
 
 // Declare state struct
-/*
- *
- */
 struct State{
     void (*drive)(uint16_t, uint16_t);                                   // Pointer to the motor function
     uint16_t left_duty_percent;                              // Left Motor PWM
@@ -33,21 +30,21 @@ typedef const struct State State_t;
 #define SR  &fsm[2]
 #define HL  &fsm[3]
 #define HR  &fsm[4]
+#define LL  &fsm[5]
+#define LR  &fsm[6]
 
-State_t fsm[5] = {
-    {&Motor_Forward, 100, 100, {SL,SL,FWD,SR,SR}},                // FWD
-    {&Motor_Forward, 60, 100, {HL, SL, FWD, FWD, FWD}},           // SL
-    {&Motor_Forward, 100, 60, {FWD, FWD, FWD, SR, HR}},           // SR
-    {&Motor_Left, 100, 100, {HL, SL, SL, SL, SL}},             // HL
-    {&Motor_Right, 100, 100, {SR, SR, SR, SR, HR}}              // HR
+State_t fsm[7] = {
+    {&Motor_Forward, 100, 100, {SL,SL,FWD,SR,SR}},              // FWD
+    {&Motor_Forward, 60, 100, {HL, SL, FWD, FWD, FWD}},         // SL
+    {&Motor_Forward, 100, 60, {FWD, FWD, FWD, SR, HR}},         // SR
+    {&Motor_Forward, 0, 100, {HL, SL, SL, SL, SL}},              // HL
+    {&Motor_Forward, 100, 0, {SR, SR, SR, SR, HR}},             // HR
+    {&Motor_Left, 100, 100, {SL, SL, SL, SL, HL}},               // LL
+    {&Motor_Right, 100, 100, {HR, SR, SR, SR, SR}}              // LR
 };
 
 // Declare function prototypes
 void initialize_robot(void);
-void Pause(void){
-  while(LaunchPad_Input()==0);  // wait for touch
-  while(LaunchPad_Input());     // wait for release
-}
 
 // Systick Interrupt Handler
 void SysTick_Handler(void){                         // every 1ms
@@ -58,7 +55,7 @@ void SysTick_Handler(void){                         // every 1ms
         reflectance_val = Reflectance_End();
         data_ready = 1;
     }
-    count = (count + 1) % 10;
+    count = (count + 1) % 7;
 }
 
 // Main function
@@ -77,10 +74,15 @@ void main(void){
 	        int32_t reflectance_pos_abs = abs(reflectance_pos);
 
 	        uint8_t index = 2;
+	        static int32_t last_pos = 0;
 	        // Categorize into degree of turn
-	        if (reflectance_pos_abs <= 4800){
+	        if (reflectance_val == 0x00){
+	            // Lost
+	            index = 5;
+	        } else if (reflectance_pos_abs <= 4800){
 	            // Forward
 	            index = 2;
+	            last_pos = reflectance_pos;
 	        } else if (reflectance_pos_abs <= 23800){
 	            // Slight Turn
 	            if (reflectance_pos > 0){
@@ -88,6 +90,7 @@ void main(void){
 	            } else{
 	                index = 1;
 	            }
+	            last_pos = reflectance_pos;
 	        } else if (reflectance_pos_abs <= 33400){
 	            // Hard Turn
 	            if (reflectance_pos > 0){
@@ -95,10 +98,19 @@ void main(void){
 	            } else{
 	                index = 0;
 	            }
-	        } // TODO: Add else statements for lost state
+	            last_pos = reflectance_pos;
+	        }
 
-	        // Set next state
-	        current = current->next[index];
+	        if (index == 5){
+	            if (last_pos > 0) {
+	                current = LL;  // was turning left
+                } else {
+                    current = LR;  // was turning right
+                }
+	        } else{
+	            // Set next state
+	            current = current->next[index];
+	        }
 
 	        // Set motor outputs
 	        current->drive((current->left_duty_percent * MAX_PWM) / 100, (current->right_duty_percent * MAX_PWM) / 100);
