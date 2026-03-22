@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 // Declare global variables
-const uint16_t MAX_PWM = 7000;
+const uint16_t MAX_PWM = 6000;
 volatile uint8_t reflectance_val;
 volatile uint8_t bump_val;
 volatile uint8_t data_ready;
@@ -55,7 +55,7 @@ void SysTick_Handler(void){                         // every 1ms
         reflectance_val = Reflectance_End();
         data_ready = 1;
     }
-    count = (count + 1) % 7;
+    count = (count + 1) % 10;
 }
 
 void PORT4_IRQHandler(void){
@@ -82,14 +82,16 @@ void main(void){
 
 	        uint8_t index = 2;
 	        static int32_t last_pos = 0;
+	        static uint8_t lost_count = 0;
 	        // Categorize into degree of turn
 	        if (reflectance_val == 0x00){
 	            // Lost
-	            index = 5;
+	            lost_count++;
 	        } else if (reflectance_pos_abs <= 4800){
 	            // Forward
 	            index = 2;
 	            last_pos = reflectance_pos;
+	            lost_count = 0;
 	        } else if (reflectance_pos_abs <= 23800){
 	            // Slight Turn
 	            if (reflectance_pos > 0){
@@ -98,6 +100,7 @@ void main(void){
 	                index = 1;
 	            }
 	            last_pos = reflectance_pos;
+	            lost_count = 0;
 	        } else if (reflectance_pos_abs <= 33400){
 	            // Hard Turn
 	            if (reflectance_pos > 0){
@@ -106,14 +109,16 @@ void main(void){
 	                index = 0;
 	            }
 	            last_pos = reflectance_pos;
+	            lost_count = 0;
 	        }
 
-	        if (index == 5){
+	        if (lost_count >= 2){
 	            if (last_pos > 0) {
 	                current = LL;  // was turning left
                 } else {
                     current = LR;  // was turning right
                 }
+	            lost_count = 0;
 	        } else{
 	            // Set next state
 	            current = current->next[index];
