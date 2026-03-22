@@ -149,7 +149,7 @@ uint8_t Reflectance_Center(uint32_t time){
 // Input: data is 8-bit result from line sensor
 // Output: position in 0.1mm relative to center of line
 int32_t Reflectance_Position(uint8_t data){
-    int weights[8] = {-33400, -23800, -14300, -4800, 4800, 14300, 23800, 33400};
+    int weights[8] = {33400, 23800, 14300, 4800, -4800, -14300, -23800, -33400};
     int numerator = 0;
     int denominator = 0;
     int i;
