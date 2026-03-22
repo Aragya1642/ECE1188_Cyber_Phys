@@ -58,6 +58,13 @@ void SysTick_Handler(void){                         // every 1ms
     count = (count + 1) % 7;
 }
 
+void PORT4_IRQHandler(void){
+    P4->IFG &= ~0xED;   // clear bump interrupt flags
+    Motor_Stop();
+    while(1){
+    }
+}
+
 // Main function
 void main(void){
     uint32_t heart = 0;                             // heartbeat

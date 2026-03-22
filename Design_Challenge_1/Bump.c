@@ -53,12 +53,18 @@ policies, either expressed or implied, of the FreeBSD Project.
 // Activate interface pullup
 // pins 7,6,5,3,2,0
 void Bump_Init(void){
-    // write this as part of Lab 10
     P4->SEL0 &= ~0xED;
     P4->SEL1 &= ~0xED;
-    P4->DIR &= ~0xED;
-    P4->REN |= 0xED;
-    P4->OUT |= 0xED;
+    P4->DIR  &= ~0xED;
+    P4->REN  |= 0xED;
+    P4->OUT  |= 0xED;
+
+    P4->IES  |= 0xED;   // falling edge: 1->0 when bump is hit
+    P4->IFG  &= ~0xED;  // clear stale flags
+    P4->IE   |= 0xED;   // enable interrupt on bump pins
+
+    NVIC->IP[9] = (NVIC->IP[9] & 0xFF00FFFF) | 0x00400000; // priority 2
+    NVIC->ISER[1] = 0x00000040;                            // enable Port 4 IRQ
 }
 // Read current state of 6 switches
 // Returns a 6-bit positive logic result (0 to 63)
