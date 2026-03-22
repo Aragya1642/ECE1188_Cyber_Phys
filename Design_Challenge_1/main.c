@@ -15,6 +15,7 @@ volatile uint8_t reflectance_val;
 volatile uint8_t bump_val;
 volatile uint8_t data_ready;
 
+
 // Declare state struct
 struct State{
     void (*drive)(uint16_t, uint16_t);                                   // Pointer to the motor function
@@ -43,6 +44,8 @@ State_t fsm[7] = {
     {&Motor_Right, 100, 100, {HR, SR, SR, SR, SR}}              // LR
 };
 
+volatile State_t *current = FWD; // Initialize in FWD state
+
 // Declare function prototypes
 void initialize_robot(void);
 
@@ -59,10 +62,38 @@ void SysTick_Handler(void){                         // every 1ms
 }
 
 void PORT4_IRQHandler(void){
-    P4->IFG &= ~0xED;   // clear bump interrupt flags
+
     Motor_Stop();
-    while(1){
+    Clock_Delay1ms(250);
+    bump_val = Bump_Read();
+
+    //uint8_t is_left = bump_val & 0b00110000;
+
+    uint8_t is_center = bump_val & 0b00001100;
+    uint8_t is_right = bump_val & 0b00000011;
+
+    if (is_center > 0) {
+       Motor_Backward((MAX_PWM * 70) / 100, (MAX_PWM * 70) / 100);
+       Clock_Delay1ms(250);
+    } else if (is_right > 0) {
+       Motor_Backward((MAX_PWM * 70) / 100, (MAX_PWM * 20) / 100);
+       Clock_Delay1ms(500);
+       Motor_Forward((MAX_PWM * 70) / 100, (MAX_PWM * 70) / 100);
+    } else {
+       Motor_Backward((MAX_PWM * 20) / 100, (MAX_PWM * 70) / 100);
+       Clock_Delay1ms(500);
+       Motor_Forward((MAX_PWM * 70) / 100, (MAX_PWM * 70) / 100);
     }
+
+    Clock_Delay1ms(500);
+
+    Motor_Stop();
+
+    Clock_Delay1ms(250);
+    current = FWD;
+    bump_val = 0;
+
+    P4->IFG &= ~0xED;   // clear bump interrupt flags
 }
 
 // Main function
@@ -71,7 +102,7 @@ void main(void){
     initialize_robot();                             // initialize the robot
 	SysTick_Init(48000, 2);                         // Interrupt @ 1000Hz
 	EnableInterrupts();                             // Enable Interrupts
-	State_t *current = FWD;                         // Initialize in FWD state
+
 
 	while(1){
 	    heart = heart^1;                            // toggle heartbeat
@@ -127,7 +158,7 @@ void main(void){
 	        // Set motor outputs
 	        current->drive((current->left_duty_percent * MAX_PWM) / 100, (current->right_duty_percent * MAX_PWM) / 100);
 
-	        // Set flag low
+	        // Set flag low=
 	        data_ready = 0;
 	    }
 
