@@ -21,7 +21,7 @@ struct State{
     void (*drive)(uint16_t, uint16_t);                                   // Pointer to the motor function
     uint16_t left_duty_percent;                              // Left Motor PWM
     uint16_t right_duty_percent;                             // Right Motor PWM
-    const struct State *next[5];                    // Next state
+    const struct State *next[6];                    // Next state
 };
 typedef const struct State State_t;
 
@@ -29,19 +29,20 @@ typedef const struct State State_t;
 #define FWD &fsm[0]
 #define SL  &fsm[1]
 #define SR  &fsm[2]
-#define HL  &fsm[3]
-#define HR  &fsm[4]
-#define LL  &fsm[5]
-#define LR  &fsm[6]
+#define ML  &fsm[3]
+#define MR  &fsm[4]
+#define HL  &fsm[5]
+#define HR  &fsm[6]
 
 State_t fsm[7] = {
-    {&Motor_Forward, 100, 100, {SL,SL,FWD,SR,SR}},              // FWD
-    {&Motor_Forward, 60, 100, {HL, SL, FWD, FWD, FWD}},         // SL
-    {&Motor_Forward, 100, 60, {FWD, FWD, FWD, SR, HR}},         // SR
-    {&Motor_Forward, 0, 100, {HL, SL, SL, SL, SL}},              // HL
-    {&Motor_Forward, 100, 0, {SR, SR, SR, SR, HR}},             // HR
-    {&Motor_Left, 100, 100, {SL, SL, SL, SL, HL}},               // LL
-    {&Motor_Right, 100, 100, {HR, SR, SR, SR, SR}}              // LR
+    {&Motor_Forward, 100, 100,   {SL, SL, FWD, SR, SR, FWD}},             // FWD
+    {&Motor_Forward, 60, 100,    {ML, SL, FWD, FWD, FWD, FWD}},        // SL
+    {&Motor_Forward, 100, 60,    {FWD, FWD, FWD, SR, MR, FWD}},        // SR
+    {&Motor_Forward, 0, 100,     {HL, ML, ML, SL, FWD, HR}},            // ML
+    {&Motor_Forward, 100, 0,     {FWD, SR, MR, MR, HR, HL}},             // MR
+    {&Motor_Left,    100, 100,   {HL, ML, ML, ML, SL, MR}},            // HL
+    {&Motor_Right,   100, 100,   {SR, MR, MR, MR, HR, ML}}             // HR
+
 };
 
 volatile State_t *current = FWD; // Initialize in FWD state
@@ -58,7 +59,7 @@ void SysTick_Handler(void){                         // every 1ms
         reflectance_val = Reflectance_End();
         data_ready = 1;
     }
-    count = (count + 1) % 10;
+    count = (count + 1) % 3;
 }
 
 void PORT4_IRQHandler(void){
@@ -112,17 +113,18 @@ void main(void){
 	        int32_t reflectance_pos_abs = abs(reflectance_pos);
 
 	        static uint8_t index = 2;
-	        static int32_t last_pos = 0;
 	        static uint8_t lost_count = 0;
+
 	        // Categorize into degree of turn
 	        if (reflectance_val == 0x00){
-	            // Lost
-	            lost_count++;
-	        } else if (reflectance_pos_abs <= 4800){
+	            index = 5;
+
+
+	        }
+	        else if (reflectance_pos_abs <= 4800){
 	            // Forward
 	            index = 2;
-	            last_pos = reflectance_pos;
-	            lost_count = 0;
+
 	        } else if (reflectance_pos_abs <= 23800){
 	            // Slight Turn
 	            if (reflectance_pos > 0){
@@ -130,8 +132,7 @@ void main(void){
 	            } else{
 	                index = 1;
 	            }
-	            last_pos = reflectance_pos;
-	            lost_count = 0;
+
 	        } else if (reflectance_pos_abs <= 33400){
 	            // Hard Turn
 	            if (reflectance_pos > 0){
@@ -139,22 +140,11 @@ void main(void){
 	            } else{
 	                index = 0;
 	            }
-	            last_pos = reflectance_pos;
-	            lost_count = 0;
+
 	        }
 
-	        if (lost_count >= 2){
-	            if (last_pos > 0) {
-	                current = LR;
-                } else {
-                    current = LL;
-                }
-	            lost_count = 0;
-	        } else{
-	            // Set next state
-	            current = current->next[index];
-	        }
-
+	        // transition state
+	        current = current->next[index];
 	        // Set motor outputs
 	        current->drive((current->left_duty_percent * MAX_PWM) / 100, (current->right_duty_percent * MAX_PWM) / 100);
 
