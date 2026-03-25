@@ -24,7 +24,7 @@ struct State{
     const struct State *next[5];                    // Next state
 };
 typedef const struct State State_t;
-
+//
 // Define FSM
 #define FWD &fsm[0]
 #define SL  &fsm[1]
