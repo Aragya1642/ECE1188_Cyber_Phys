@@ -34,37 +34,16 @@ typedef const struct State State_t;
 #define HL  &fsm[5]
 #define HR  &fsm[6]
 
-//State_t fsm[7] = {
-//    {&Motor_Forward, 100, 100,   {SL, SL, FWD, SR, SR, FWD}},             // FWD
-//    {&Motor_Forward, 60, 100,    {ML, SL, FWD, FWD, FWD, FWD}},        // SL
-//    {&Motor_Forward, 100, 60,    {FWD, FWD, FWD, SR, MR, FWD}},        // SR
-//    {&Motor_Forward, 0, 100,     {HL, ML, ML, SL, FWD, HR}},            // ML
-//    {&Motor_Forward, 100, 0,     {FWD, SR, MR, MR, HR, HL}},             // MR
-//    {&Motor_Left,    100, 100,   {HL, ML, ML, ML, SL, HR}},            // HL
-//    {&Motor_Right,   100, 100,   {SR, MR, MR, MR, HR, HL}}             // HR
-//
-//};
-
-//State_t fsm[7] = {
-//    //  drive,          L%,  R%,    {idx=0, idx=1, idx=2, idx=3, idx=4, idx=5 (LOST)}
-//    {&Motor_Forward, 100, 100,   {SL,  SL,  FWD, SR,  SR,  FWD}},  // FWD
-//    {&Motor_Forward,  60, 100,   {ML,  SL,  FWD, FWD, FWD, FWD}},  // SL
-//    {&Motor_Forward, 100,  60,   {FWD, FWD, FWD, SR,  MR,  FWD}},  // SR
-//    {&Motor_Forward,   0, 100,   {HL,  ML,  ML,  SL,  FWD, HL }},  // ML
-//    {&Motor_Forward, 100,   0,   {FWD, SR,  MR,  MR,  HR,  HR }},  // MR
-//    {&Motor_Left,    100, 100,   {HL,  ML,  ML,  ML,  SL,  HL }},  // HL
-//    {&Motor_Right,   100, 100,   {SR,  MR,  MR,  MR,  HR,  HR }}   // HR
-//};
 
 State_t fsm[7] = {
     //  drive,          L%,  R%,    {0:FL, 1:SL, 2:C,   3:SR, 4:FR, 5:LOST}
     {&Motor_Forward, 100, 100,   { ML,   SL,   FWD,  SR,   MR,   FWD }}, // FWD
-    {&Motor_Forward,  60, 100,   { HL,   SL,   FWD,  FWD,  SR,   SL  }}, // SL  (Damps to FWD when centered)
-    {&Motor_Forward, 100,  60,   { SL,   FWD,  FWD,  SR,   HR,   SR  }}, // SR  (Damps to FWD when centered)
-    {&Motor_Forward,   0, 100,   { HL,   ML,   FWD,  SR,   MR,   HL  }}, // ML  (Immediately straightens when centered)
-    {&Motor_Forward, 100,   0,   { ML,   SL,   FWD,  MR,   HR,   HR  }}, // MR  (Immediately straightens when centered)
-    {&Motor_Left,    100, 100,   { HL,   ML,   FWD,  SR,   HR,   HL  }}, // HL  (Fixed: Crosses center -> goes FWD)
-    {&Motor_Right,   100, 100,   { HL,   SL,   FWD,  MR,   HR,   HR  }}  // HR  (Fixed: Crosses center -> goes FWD)
+    {&Motor_Forward,  60, 100,   { HL,   SL,   FWD,  FWD,  SR,   SL  }}, // SL 
+    {&Motor_Forward, 100,  60,   { SL,   FWD,  FWD,  SR,   HR,   SR  }}, // SR  
+    {&Motor_Forward,   0, 100,   { HL,   ML,   FWD,  SR,   MR,   HL  }}, // ML 
+    {&Motor_Forward, 100,   0,   { ML,   SL,   FWD,  MR,   HR,   HR  }}, // MR  
+    {&Motor_Left,    100, 100,   { HL,   ML,   FWD,  SR,   HR,   HL  }}, // HL  
+    {&Motor_Right,   100, 100,   { HL,   SL,   FWD,  MR,   HR,   HR  }}  // HR  
 };
 
 volatile State_t *current = FWD; // Initialize in FWD state
