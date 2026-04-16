@@ -6,8 +6,9 @@
 #include "..\inc\odometry.h"
 #include "..\inc\Bump.h"
 #include "..\inc\CortexM.h"
-#include "..\inc\TimerA1.h"    // Required for periodic interrupts
-#include "..\inc\opt3101.h"    // Assuming OPT3101 Time-of-Flight sensors for wall distance
+#include "..\inc\TimerA1.h"
+#include "..\inc\opt3101.h"
+#include "..\inc\I2CB1.h"
 
 // --- Hardware Constraints ---
 #define DESIRED_DISTANCE 250   // mm from the right wall
@@ -25,7 +26,12 @@ int main(void){
     Motor_Init();
     Tachometer_Init();
     Bump_Init();
+
+    I2CB1_Init(30); // Initialize I2C with prescaler 30 (400 kHz baud rate)
+
     OPT3101_Init();
+    OPT3101_Setup(); // Configure sensor registers and monoshot mode
+    OPT3101_CalibrateInternalCrosstalk(); // Calibrate phase offsets
 
     // 2. Initialize Odometry State
     // Start at coordinate (0,0), facing East (0 radians)
@@ -79,10 +85,10 @@ int main(void){
         }
 
         // --- D. Safety Checking ---
-        if (Bump_Read() != 0) {
-            Motor_Stop();
+      //  if (Bump_Read() != 0) {
+      //      Motor_Stop();
             // Implement collision recovery/reversal here
-        }
+       // }
 
         // Brief delay before reading I2C sensors again (e.g., 10-30ms)
         Clock_Delay1ms(20);

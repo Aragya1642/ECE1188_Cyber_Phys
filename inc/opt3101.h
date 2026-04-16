@@ -230,3 +230,7 @@ uint32_t OPT3101_GetMeasurement(uint32_t distances[3], uint32_t amplitudes[3]);
  * @brief  get measurements from last measurement
  */
 void OPT3101_ArmInterrupts(uint32_t *pTxChan, uint32_t distances[3], uint32_t amplitudes[3]);
+
+uint32_t OPT3101_GetCenter(void);
+uint32_t OPT3101_GetLeft(void);
+uint32_t OPT3101_GetRight(void);

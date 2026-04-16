@@ -139,17 +139,52 @@ void I2CB1_Send1(uint8_t slaveAddr, uint8_t data){
 }
 
 void I2CB1_Send2(uint8_t slaveAddr, uint8_t regNum, uint8_t data){
-    // write this as part of Lab 21
+  uint8_t payload[2];
+  payload[0] = regNum;
+  payload[1] = data;
+  I2CB1_Send(slaveAddr, payload, 2);
 }
+
 void I2CB1_Send3(uint8_t slaveAddr, uint8_t regNum, uint8_t data[2]){
-   // write this as part of Lab 21
+  uint8_t payload[3];
+  payload[0] = regNum;
+  payload[1] = data[0];
+  payload[2] = data[1];
+  I2CB1_Send(slaveAddr, payload, 3);
 }
+
 void I2CB1_Send4(uint8_t slaveAddr, uint8_t regNum, uint8_t data[3]){
-  // write this as part of Lab 21
+  uint8_t payload[4];
+  payload[0] = regNum;
+  payload[1] = data[0];
+  payload[2] = data[1];
+  payload[3] = data[2];
+  I2CB1_Send(slaveAddr, payload, 4);
 }
+
 // receives one byte from specified slave
-uint8_t  I2CB1_Recv1(int8_t slaveAddr){
-  int8_t data=0;
-  // write this as part of Lab 21
+uint8_t I2CB1_Recv1(int8_t slaveAddr){
+  uint8_t data = 0;
+
+  while(EUSCI_B1->STATW & 0x0010){}; // wait UCBBUSY
+  EUSCI_B1->I2CSA = slaveAddr;       // set slave address
+
+  // I2C master receive mode
+  EUSCI_B1->CTLW0 &= ~0x0010;        // UCTR=0, receive mode
+  EUSCI_B1->CTLW0 |= 0x0002;         // UCTXSTT=1, Master receive, start condition
+
+  // Wait for the start condition to be transmitted
+  while(EUSCI_B1->CTLW0 & 0x0002){};
+
+  // IMMEDIATELY generate the STOP condition for a 1-byte receive
+  // This must be done before reading RXBUF for a single byte transaction
+  EUSCI_B1->CTLW0 |= 0x0004;         // UCTXSTP=1
+
+  // Wait for the data to arrive in the receive buffer
+  while((EUSCI_B1->IFG & 0x0001) == 0){}; // wait for UCRXIFG0
+
+  data = EUSCI_B1->RXBUF;            // read the received byte
+
   return data;
 }
+
