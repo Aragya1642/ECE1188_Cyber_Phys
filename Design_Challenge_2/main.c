@@ -7,7 +7,6 @@
 #include "..\inc\LaunchPad.h"
 #include "..\inc\FlashProgram.h"
 #include "..\inc\Motor.h"
-#include "..\inc\odometry.h"
 #include <stdlib.h>
 
 // Declare global variables

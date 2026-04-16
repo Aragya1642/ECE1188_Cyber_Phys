@@ -5,7 +5,7 @@
 // This system will need calibration to your particular robot, adjust N D W C for your robot
 // Runs on the MSP432
 // Daniel and Jonathan Valvano
-// February 10, 2019
+// July 31_2019
 
 /* This example accompanies the book
    "Embedded Systems: Introduction to Robotics,
@@ -53,6 +53,12 @@ policies, either expressed or implied, of the FreeBSD Project.
 #include "..\inc\clock.h"
 #include "..\inc\blinker.h"
 
+
+void Odometry_SetPower(uint32_t fast, uint32_t slow){
+  MotorFast=fast; ///< PWM for fast motions, out of 15000
+  MotorSlow=slow;
+
+}
 int32_t Robotx,Roboty; // position in 0.0001cm
 int32_t Robottheta;    // direction units 2*pi/16384 radians (-pi to +pi)
 // e.g., 90 degrees (pi/2 radians) is 4096
@@ -228,31 +234,31 @@ void Forward(void){
   Action = GOFORWARD;
   Blinker_Output(FR_LEFT+FR_RGHT);
   Display();
-  Motor_Forward(MOTORFAST,MOTORFAST);  // move
+  Motor_Forward(MotorFast,MotorFast);  // move
 }
 void HardLeft(void){
   Action = HARDLEFT;
   Blinker_Output(FR_LEFT+BK_LEFT);
   Display();
-  Motor_Left(MOTORSLOW,MOTORSLOW);  // left
+  Motor_Left(MotorSlow,MotorSlow);  // left
 }
 void HardRight(void){
   Action = HARDRIGHT;
   Blinker_Output(FR_RGHT+BK_RGHT);
   Display();
-  Motor_Right(MOTORSLOW,MOTORSLOW);  // right
+  Motor_Right(MotorSlow,MotorSlow);  // right
 }
 void SoftLeft(void){
   Action = SOFTLEFT;
   Blinker_Output(FR_LEFT+BK_LEFT);
   Display();
-  Motor_Forward(0,MOTORSLOW);  // left
+  Motor_Forward(0,MotorSlow);  // left
 }
 void SoftRight(void){
   Action = SOFTRIGHT;
   Blinker_Output(FR_RGHT+BK_RGHT);
   Display();
-  Motor_Forward(MOTORSLOW,0);  // right
+  Motor_Forward(MotorSlow,0);  // right
 }
 uint32_t ForwardUntilCrash(void){uint32_t data;
   Forward();
