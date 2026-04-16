@@ -1,169 +1,90 @@
+#include <stdint.h>
 #include "msp.h"
-#include "..\inc\Bump.h"
-#include "..\inc\Reflectance.h"
 #include "..\inc\Clock.h"
-#include "..\inc\SysTickInts.h"
-#include "..\inc\CortexM.h"
-#include "..\inc\LaunchPad.h"
-#include "..\inc\FlashProgram.h"
 #include "..\inc\Motor.h"
-#include <stdlib.h>
+#include "..\inc\Tachometer.h"
+#include "..\inc\odometry.h"
+#include "..\inc\Bump.h"
+#include "..\inc\CortexM.h"
+#include "..\inc\TimerA1.h"    // Required for periodic interrupts
+#include "..\inc\opt3101.h"    // Assuming OPT3101 Time-of-Flight sensors for wall distance
 
-// Declare global variables
-const uint16_t MAX_PWM = 6000;
-volatile uint8_t reflectance_val;
-volatile uint8_t bump_val;
-volatile uint8_t data_ready;
+// --- Hardware Constraints ---
+#define DESIRED_DISTANCE 250   // mm from the right wall
+#define GOAL_X_COORD 2000000   // 2 meters (units of 0.0001cm)
 
+// --- Background Task ---
+// This runs exactly every 20ms to accurately integrate tachometer counts
+void Background_OdometryTask(void){
+    UpdatePosition(); // From odometry.c: reads tachs, calculates math, updates X/Y/Theta
+}
 
-// Declare state struct
-struct State{
-    void (*drive)(uint16_t, uint16_t);                                   // Pointer to the motor function
-    uint16_t left_duty_percent;                              // Left Motor PWM
-    uint16_t right_duty_percent;                             // Right Motor PWM
-    const struct State *next[6];                    // Next state
-};
-typedef const struct State State_t;
+int main(void){
+    // 1. Initialize System and Peripherals
+    Clock_Init48MHz();
+    Motor_Init();
+    Tachometer_Init();
+    Bump_Init();
+    OPT3101_Init();
 
-// Define FSM
-#define FWD &fsm[0]
-#define SL  &fsm[1]
-#define SR  &fsm[2]
-#define ML  &fsm[3]
-#define MR  &fsm[4]
-#define HL  &fsm[5]
-#define HR  &fsm[6]
+    // 2. Initialize Odometry State
+    // Start at coordinate (0,0), facing East (0 radians)
+    Odometry_Init(0, 0, 0);
+    Odometry_SetPower(3000, 1500);
 
+    // 3. Set up Timer A1 for 20ms periodic interrupts (48MHz / 50Hz = 960,000 cycles)
+    // This allows Odometry_Update to run constantly in the background
+    TimerA1_Init(&Background_OdometryTask, 960000);
 
-State_t fsm[7] = {
-    //  drive,          L%,  R%,    {0:FL, 1:SL, 2:C,   3:SR, 4:FR, 5:LOST}
-    {&Motor_Forward, 100, 100,   { ML,   SL,   FWD,  SR,   MR,   FWD }}, // FWD
-    {&Motor_Forward,  60, 100,   { HL,   SL,   FWD,  FWD,  SR,   SL  }}, // SL 
-    {&Motor_Forward, 100,  60,   { SL,   FWD,  FWD,  SR,   HR,   SR  }}, // SR  
-    {&Motor_Forward,   0, 100,   { HL,   ML,   FWD,  SR,   MR,   HL  }}, // ML 
-    {&Motor_Forward, 100,   0,   { ML,   SL,   FWD,  MR,   HR,   HR  }}, // MR  
-    {&Motor_Left,    100, 100,   { HL,   ML,   FWD,  SR,   HR,   HL  }}, // HL  
-    {&Motor_Right,   100, 100,   { HL,   SL,   FWD,  MR,   HR,   HR  }}  // HR  
-};
+    EnableInterrupts();
 
-volatile State_t *current = FWD; // Initialize in FWD state
+    // Variables to hold sensor data and position
+    uint32_t distLeft, distCenter, distRight;
+    int32_t myX, myY, myTheta;
 
-// Declare function prototypes
-void initialize_robot(void);
+    while(1){
+        // --- A. Read Sensors ---
+        // Get distances to walls
+        distLeft = OPT3101_GetLeft();
+        distCenter = OPT3101_GetCenter();
+        distRight = OPT3101_GetRight();
 
-// Systick Interrupt Handler
-void SysTick_Handler(void){                         // every 1ms
-    static uint8_t count = 0;
-    if (count == 0){
-        Reflectance_Start();
-    } else if (count == 1){
-        reflectance_val = Reflectance_End();
-        data_ready = 1;
+        // Get current coordinates from the background odometry task
+        Odometry_Get(&myX, &myY, &myTheta);
+
+        // --- B. Check Navigation Goals ---
+        // Has the robot navigated to the target X coordinate while following the wall?
+        if(myX >= GOAL_X_COORD) {
+            Motor_Stop();
+            DisableInterrupts(); // Reached goal, shut down
+            while(1);
+        }
+
+        // --- C. Wall Following Control Logic (Right Wall FSM) ---
+        // If an obstacle is directly ahead, turn left away from it
+        if(distCenter < 200) {
+            Motor_Left(2000, 2000);
+        }
+        // If we are getting too close to the right wall, steer left slightly
+        else if(distRight < (DESIRED_DISTANCE - 50)) {
+            Motor_Forward(2500, 1500); // Right wheel faster than left
+        }
+        // If we are getting too far from the right wall, steer right slightly
+        else if(distRight > (DESIRED_DISTANCE + 50)) {
+            Motor_Forward(1500, 2500); // Left wheel faster than right
+        }
+        // If we are in the "sweet spot", drive straight
+        else {
+            Motor_Forward(2000, 2000);
+        }
+
+        // --- D. Safety Checking ---
+        if (Bump_Read() != 0) {
+            Motor_Stop();
+            // Implement collision recovery/reversal here
+        }
+
+        // Brief delay before reading I2C sensors again (e.g., 10-30ms)
+        Clock_Delay1ms(20);
     }
-    count = (count + 1) % 3;
-}
-
-void PORT4_IRQHandler(void){
-
-    Motor_Stop();
-    Clock_Delay1ms(250);
-    bump_val = Bump_Read();
-
-    //uint8_t is_left = bump_val & 0b00110000;
-
-    uint8_t is_center = bump_val & 0b00001100;
-    uint8_t is_right = bump_val & 0b00000011;
-
-    if (is_center > 0) {
-       Motor_Backward((MAX_PWM * 70) / 100, (MAX_PWM * 70) / 100);
-       Clock_Delay1ms(250);
-    } else if (is_right > 0) {
-       Motor_Backward((MAX_PWM * 70) / 100, (MAX_PWM * 20) / 100);
-       Clock_Delay1ms(500);
-       Motor_Forward((MAX_PWM * 70) / 100, (MAX_PWM * 70) / 100);
-    } else {
-       Motor_Backward((MAX_PWM * 20) / 100, (MAX_PWM * 70) / 100);
-       Clock_Delay1ms(500);
-       Motor_Forward((MAX_PWM * 70) / 100, (MAX_PWM * 70) / 100);
-    }
-
-    Clock_Delay1ms(500);
-
-    Motor_Stop();
-
-    Clock_Delay1ms(250);
-    current = FWD;
-    bump_val = 0;
-
-    P4->IFG &= ~0xED;   // clear bump interrupt flags
-}
-
-// Main function
-void main(void){
-    uint32_t heart = 0;                             // heartbeat
-    initialize_robot();                             // initialize the robot
-	SysTick_Init(48000, 2);                         // Interrupt @ 1000Hz
-	EnableInterrupts();                             // Enable Interrupts
-
-
-	while(1){
-	    heart = heart^1;                            // toggle heartbeat
-	    if (data_ready){
-	        // Get high level position values
-	        int32_t reflectance_pos = Reflectance_Position(reflectance_val);
-	        int32_t reflectance_pos_abs = abs(reflectance_pos);
-
-	        static uint8_t index = 2;
-
-
-	        // Categorize into degree of turn
-	        if (reflectance_val == 0x00){
-	            index = 5;
-
-
-	        }
-	        else if (reflectance_pos_abs <= 6000){
-	            // Forward
-	            index = 2;
-
-	        } else if (reflectance_pos_abs <= 23800){
-	            // Slight Turn
-	            if (reflectance_pos > 0){
-	                index = 3;
-	            } else{
-	                index = 1;
-	            }
-
-	        } else if (reflectance_pos_abs <= 33400){
-	            // Hard Turn
-	            if (reflectance_pos > 0){
-	                index = 4;
-	            } else{
-	                index = 0;
-	            }
-
-	        }
-
-	        // transition state
-	        current = current->next[index];
-	        // Set motor outputs
-	        current->drive((current->left_duty_percent * MAX_PWM) / 100, (current->right_duty_percent * MAX_PWM) / 100);
-
-	        // Set flag low=
-	        data_ready = 0;
-	    }
-
-
-
-	}
-}
-
-
-// Helper function Implementation
-void initialize_robot(void){
-    Clock_Init48MHz();                              // Initialize Clock
-    LaunchPad_Init();                               // Initialize LED/Buttons
-    Bump_Init();                                    // Initialize bump sensor
-    Reflectance_Init();                             // Initialize reflectance
-    Motor_Init();                                   // Initialize motors
 }

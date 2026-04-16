@@ -70,8 +70,7 @@ policies, either expressed or implied, of the FreeBSD Project.
 #define THETATOLERANCE (4096/90)  ///< tolerance in angle goal seeking, 1 deg
 
 
-uint32_t MotorFast=4000; // PWM for fast motions, out of 15000
-uint32_t MotorSlow=2000; // PWM for slow motions, out of 15000
+
 
 /**
  * Initialize odometry module by specifying the initial position/angle of the robot.

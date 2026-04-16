@@ -26,6 +26,11 @@
 	</natures>
 	<linkedResources>
 		<link>
+			<name>SSD1306.c</name>
+			<type>1</type>
+			<locationURI>copy_PARENT/inc/SSD1306.c</locationURI>
+		</link>
+		<link>
 			<name>Tachometer.c</name>
 			<type>1</type>
 			<locationURI>copy_PARENT/inc/Tachometer.c</locationURI>
