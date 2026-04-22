@@ -38,7 +38,8 @@
 
 // --- MQTT Settings ---
 #define MQTT_BROKER_SERVER  "mqtt-dashboard.com"
-#define PUBLISH_TOPIC "testingtesting12345"
+#define MQTT_BROKER_PORT    1883
+#define PUBLISH_TOPIC       "testingtesting12345"
 #define BUFF_SIZE 64 // Increased from 32 to fit the JSON telemetry string
 #define APPLICATION_VERSION "1.0.0"
 
@@ -97,14 +98,14 @@ static _i32 establishConnectionWithAP();
 static _i32 configureSimpleLinkToDefaultState();
 static _i32 initializeAppVariables();
 static void displayBanner();
-static void messageSend(); // Replaced messageArrived
+static void messageSend();
 static void generateUniqueID();
 
 // ============================================================================
 // ASYNCHRONOUS EVENT HANDLERS (Required by SimpleLink)
 // ============================================================================
 void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent) {
-    if(pWlanEvent == NULL) CLI_Write(" [WLAN EVENT] NULL Pointer Error \n\r");
+    if(pWlanEvent == NULL) ;// CLI_Write(" [WLAN EVENT] NULL Pointer Error \n\r");
     switch(pWlanEvent->Event) {
         case SL_WLAN_CONNECT_EVENT:
             SET_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
@@ -118,7 +119,7 @@ void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent) {
 }
 
 void SimpleLinkNetAppEventHandler(SlNetAppEvent_t *pNetAppEvent) {
-    if(pNetAppEvent == NULL) CLI_Write(" [NETAPP EVENT] NULL Pointer Error \n\r");
+    if(pNetAppEvent == NULL) ;//CLI_Write(" [NETAPP EVENT] NULL Pointer Error \n\r");
     switch(pNetAppEvent->Event) {
         case SL_NETAPP_IPV4_IPACQUIRED_EVENT:
             SET_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
@@ -161,9 +162,9 @@ static void messageSend(void) {
     // Publish to the MQTT Broker
     int rc = MQTTPublish(&hMQTTClient, PUBLISH_TOPIC, &msg);
     if (rc != 0) {
-        CLI_Write(" Failed to publish telemetry \n\r");
+       // CLI_Write(" Failed to publish telemetry \n\r");
     } else {
-        CLI_Write(" Telemetry published! \n\r");
+       // CLI_Write(" Telemetry published! \n\r");
     }
 }
 
@@ -181,17 +182,24 @@ int main(void){
     unsigned char buf[100];
     unsigned char readbuf[100];
 
-    // 1. Initialize Base Clock First (Critical for Wi-Fi SPI comms)
+    // 1. Initialize Base Clock
     Clock_Init48MHz();
 
+    // 2. Clear any lingering ghost interrupts on Port 2 (where HOST_INTR usually lives)
+    P2->IFG = 0;
+
+    // 3. Enable Global Interrupts
     EnableInterrupts();
     Interrupt_enableMaster();
 
+    // 4. THE FIX: Give the CC3100 Wi-Fi chip 100ms to physically boot and stabilize
+    Clock_Delay1ms(100);
+
     // --- WI-FI & MQTT INITIALIZATION BLOCK ---
     retVal = initializeAppVariables();
-    CLI_Configure();
-    displayBanner();
+    UART0_Init();
 
+    // Now the Wi-Fi chip is fully awake and ready to trigger clean edge interrupts
     retVal = configureSimpleLinkToDefaultState();
     if(retVal < 0) LOOP_FOREVER();
 
@@ -207,16 +215,22 @@ int main(void){
     generateUniqueID();
 
     NewNetwork(&n);
-    rc = ConnectNetwork(&n, MQTT_BROKER_SERVER, 1883);
+
+    // Connect using the new server and port 8883
+    rc = ConnectNetwork(&n, MQTT_BROKER_SERVER, MQTT_BROKER_PORT);
     if (rc != 0) LOOP_FOREVER();
 
-    MQTTClient(&hMQTTClient, &n, 1000, buf, 100, readbuf, 100);
+    MQTTClient(&hMQTTClient, &n, 5000, buf, 100, readbuf, 100);
     MQTTPacket_connectData cdata = MQTTPacket_connectData_initializer;
-    cdata.MQTTVersion = 3;
+
+    cdata.MQTTVersion = 4;
     cdata.clientID.cstring = uniqueID;
 
     rc = MQTTConnect(&hMQTTClient, &cdata);
-    if (rc != 0) LOOP_FOREVER();
+    if (rc != 0) {
+        //CLI_Write(" MQTT Connect Failed! \n\r");
+        LOOP_FOREVER();
+    }
     // -----------------------------------------
 
     // 2. Initialize Robot Hardware Peripherals
@@ -224,7 +238,6 @@ int main(void){
     Tachometer_Init();
     Bump_Init();
     I2CB1_Init(30);
-    UART0_Init();
 
     OPT3101_Init();
     OPT3101_Setup();
@@ -268,35 +281,53 @@ int main(void){
             }
         }
 
-        // 3. Execute Robot Logic Based on State
+        // --- Tuning Parameters for P-Control ---
+        int32_t baseSpeed = 3000; // Normal driving speed
+        int32_t Kp = 10;          // Proportional Gain (Start around 5-10 and tune)
+        int32_t maxSpeed = 5000;  // Absolute maximum PWM to prevent runaways
+        int32_t minSpeed = 1000;  // Minimum PWM to prevent stalling
+
+        // --- Execute Robot Logic Based on State ---
         if(systemState == 1){
             distLeft = OPT3101_GetLeft();
             distCenter = OPT3101_GetCenter();
             distRight = OPT3101_GetRight();
             Odometry_Get(&myX, &myY, &myTheta);
 
+            // Goal Check (Now effectively infinite with 2147483647)
             if(myX >= GOAL_X_COORD) {
                 Motor_Stop();
                 systemState = 0;
             }
+            // Front Collision Avoidance (Overrides wall following)
             else if(distCenter < 200) {
-                Motor_Left(4000, 4000);
+                Motor_Left(2000, 2000);
             }
-            else if(distRight < (DESIRED_DISTANCE - 50)) {
-                Motor_Forward(4500, 3500);
-            }
-            else if(distRight > (DESIRED_DISTANCE + 50)) {
-                Motor_Forward(3500, 4500);
-            }
+            // Proportional Wall Following
             else {
-                Motor_Forward(2000, 2000);
+                // 1. Calculate Error (+ means too close to right wall, - means too far)
+                int32_t error = DESIRED_DISTANCE - distRight;
+
+                // 2. Calculate Proportional Adjustment
+                int32_t turnAdjustment = Kp * error;
+
+                // 3. Apply to wheels (If too close, left wheel slows, right wheel speeds up)
+                int32_t leftPWM = baseSpeed - turnAdjustment;
+                int32_t rightPWM = baseSpeed + turnAdjustment;
+
+                // 4. Clamp the PWM values to prevent integer overflow or motor stalling
+                if (leftPWM > maxSpeed) leftPWM = maxSpeed;
+                if (leftPWM < minSpeed) leftPWM = minSpeed;
+                if (rightPWM > maxSpeed) rightPWM = maxSpeed;
+                if (rightPWM < minSpeed) rightPWM = minSpeed;
+
+                Motor_Forward(leftPWM, rightPWM);
             }
 
-            // Bump Sensor Logic
             if (Bump_Read() != 0) {
                 Motor_Stop();
-                Clock_Delay1ms(500);
-                Motor_Backward(4000,1000);
+                systemState = 0;
+                crashCount++;
             }
         }
         else {
@@ -385,10 +416,10 @@ static _i32 initializeAppVariables() {
 }
 
 static void displayBanner() {
-    CLI_Write("\n\r\n\r");
-    CLI_Write(" MQTT Robot Integration - Version ");
-    CLI_Write(APPLICATION_VERSION);
-    CLI_Write("\n\r*******************************************************************************\n\r");
+   // CLI_Write("\n\r\n\r");
+   /// CLI_Write(" MQTT Robot Integration - Version ");
+   // CLI_Write(APPLICATION_VERSION);
+   // CLI_Write("\n\r*******************************************************************************\n\r");
 }
 
 static void generateUniqueID() {
