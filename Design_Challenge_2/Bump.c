@@ -63,8 +63,8 @@ void Bump_Init(void){
     P4->IFG  &= ~0xED;  // clear stale flags
     P4->IE   |= 0xED;   // enable interrupt on bump pins
 
-   // NVIC->IP[9] = (NVIC->IP[9] & 0xFF00FFFF) | 0x00400000; // priority 2
-   // NVIC->ISER[1] = 0x00000040;                            // enable Port 4 IRQ
+    NVIC->IP[9] = (NVIC->IP[9] & 0xFF00FFFF) | 0x00400000; // priority 2
+    NVIC->ISER[1] = 0x00000040;                            // enable Port 4 IRQ
 }
 // Read current state of 6 switches
 // Returns a 6-bit positive logic result (0 to 63)

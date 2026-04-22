@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h> // Added for snprintf
+#include <stdio.h>
 
 // --- Primary Hardware Includes ---
 #include "msp.h"
@@ -15,6 +15,7 @@
 #include "..\inc\opt3101.h"
 #include "..\inc\I2CB1.h"
 #include "..\inc\UART0.h"
+#include "..\inc\Reflectance.h" // Added for DC1 Line Sensor
 
 // --- Wi-Fi / MQTT Includes ---
 #include "driverlib.h"
@@ -40,7 +41,7 @@
 #define MQTT_BROKER_SERVER  "mqtt-dashboard.com"
 #define MQTT_BROKER_PORT    1883
 #define PUBLISH_TOPIC       "testingtesting12345"
-#define BUFF_SIZE 64 // Increased from 32 to fit the JSON telemetry string
+#define BUFF_SIZE 64
 #define APPLICATION_VERSION "1.0.0"
 
 // --- SimpleLink Macros ---
@@ -66,10 +67,14 @@ typedef enum{
 int systemState = 0;
 
 // --- Telemetry Trackers ---
-volatile uint32_t systemTimeMs = 0; // Tracks total system uptime in ms
-uint32_t startTimeMs = 0;           // Snapshot of time when 'f' is pressed
-uint32_t crashCount = 0;            // Number of bump sensor hits
-uint32_t maxSpeed = 4500;           // Base max PWM defined by your wall following logic
+volatile uint32_t systemTimeMs = 0;
+uint32_t startTimeMs = 0;
+uint32_t crashCount = 0;
+uint32_t maxSpeed = 4500;
+
+// --- Line Sensor Trackers ---
+volatile uint8_t reflectance_val = 0;
+volatile uint8_t finish_line_crossed = 0; // Replaced data_ready with a persistent flag
 
 // --- MQTT / SimpleLink Globals ---
 volatile int publishID = 0;
@@ -105,7 +110,7 @@ static void generateUniqueID();
 // ASYNCHRONOUS EVENT HANDLERS (Required by SimpleLink)
 // ============================================================================
 void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent) {
-    if(pWlanEvent == NULL) ;// CLI_Write(" [WLAN EVENT] NULL Pointer Error \n\r");
+    if(pWlanEvent == NULL) ;
     switch(pWlanEvent->Event) {
         case SL_WLAN_CONNECT_EVENT:
             SET_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
@@ -119,7 +124,7 @@ void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent) {
 }
 
 void SimpleLinkNetAppEventHandler(SlNetAppEvent_t *pNetAppEvent) {
-    if(pNetAppEvent == NULL) ;//CLI_Write(" [NETAPP EVENT] NULL Pointer Error \n\r");
+    if(pNetAppEvent == NULL) ;
     switch(pNetAppEvent->Event) {
         case SL_NETAPP_IPV4_IPACQUIRED_EVENT:
             SET_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
@@ -133,19 +138,41 @@ void SimpleLinkGeneralEventHandler(SlDeviceEvent_t *pDevEvent) {}
 void SimpleLinkSockEventHandler(SlSockEvent_t *pSock) {}
 
 // ============================================================================
-// BACKGROUND TASKS & CALLBACKS
+// BACKGROUND TASKS & CALLBACKS (Timer Multiplexing)
 // ============================================================================
 
-// Runs exactly every 20ms to accurately integrate tachometer counts
-void Background_OdometryTask(void){
-    UpdatePosition();
-    systemTimeMs += 20; // Increment global time tracker by 20ms
+// This single task fires every 1ms to handle BOTH line sensing and odometry
+void Background_1ms_Task(void){
+    // --- 1. Reflectance Sensor Logic (Runs every 1ms) ---
+    static uint8_t ref_count = 0;
+    if (ref_count == 0){
+        Reflectance_Start();
+    } else if (ref_count == 1){
+        reflectance_val = Reflectance_End();
+
+        // NEW: Check for the finish line HERE at high speed (333Hz).
+        // 0x7E is 0b01111110. This ensures the 6 center sensors see black,
+        // ignoring the 2 outer edges which are prone to ambient light bleed.
+        if ((reflectance_val & 0x7E) == 0x7E) {
+            finish_line_crossed = 1;
+        }
+    }
+    ref_count = (ref_count + 1) % 3;
+
+    // --- 2. Odometry Logic (Runs every 20ms) ---
+    static uint8_t odom_count = 0;
+    odom_count++;
+    if(odom_count >= 20) {
+        UpdatePosition();
+        systemTimeMs += 20; // Increment global time tracker
+        odom_count = 0;     // Reset the 20ms counter
+    }
 }
 
 // Packages the 3 global variables and broadcasts them to Node-RED
 static void messageSend(void) {
     char payload[BUFF_SIZE];
-    uint32_t activeRunTime = systemTimeMs - startTimeMs; // Calculate duration
+    uint32_t activeRunTime = systemTimeMs - startTimeMs;
 
     // Format telemetry as a JSON string
     snprintf(payload, BUFF_SIZE, "{\"speed\":%d,\"time\":%d,\"crashes\":%d}",
@@ -161,16 +188,55 @@ static void messageSend(void) {
 
     // Publish to the MQTT Broker
     int rc = MQTTPublish(&hMQTTClient, PUBLISH_TOPIC, &msg);
-    if (rc != 0) {
-       // CLI_Write(" Failed to publish telemetry \n\r");
-    } else {
-       // CLI_Write(" Telemetry published! \n\r");
-    }
 }
 
-// Catch Unhandled Port 4 Interrupts (Bump Sensors)
+// ============================================================================
+// HARDWARE INTERRUPT HANDLERS
+// ============================================================================
+
+// Hardware Interrupt for Bump Sensors
 void PORT4_IRQHandler(void) {
-    P4->IFG = 0; // Clear all interrupt flags for Port 4 to prevent Default_Handler crash
+    uint8_t bump_val;
+
+    // 1. Immediately stop motors and delay 500ms
+    Motor_Stop();
+    Clock_Delay1ms(500);
+
+    // 2. Read bumper state
+    bump_val = Bump_Read();
+
+    // 3. Log the crash for telemetry
+    crashCount++;
+
+    // 4. Isolate sensor zones
+    uint8_t is_center = bump_val & 0b00001100;
+    uint8_t is_right  = bump_val & 0b00000011;
+
+    // 5. Execute Evasive Maneuver
+    if (is_center > 0) {
+        Motor_Backward((maxSpeed * 70) / 100, (maxSpeed * 70) / 100);
+        Clock_Delay1ms(250);
+    }
+    else if (is_right > 0) {
+        Motor_Backward((maxSpeed * 70) / 100, (maxSpeed * 20) / 100);
+        Clock_Delay1ms(500);
+        Motor_Forward((maxSpeed * 70) / 100, (maxSpeed * 70) / 100);
+    }
+    else {
+        // Left side or default
+        Motor_Backward((maxSpeed * 20) / 100, (maxSpeed * 70) / 100);
+        Clock_Delay1ms(500);
+        Motor_Forward((maxSpeed * 70) / 100, (maxSpeed * 70) / 100);
+    }
+
+    Clock_Delay1ms(500);
+
+    // 6. Stabilize before returning to state machine
+    Motor_Stop();
+    Clock_Delay1ms(250);
+
+    // 7. Clear bump interrupt flags to prevent Default_Handler crash
+    P4->IFG &= ~0xED;
 }
 
 // ============================================================================
@@ -185,21 +251,20 @@ int main(void){
     // 1. Initialize Base Clock
     Clock_Init48MHz();
 
-    // 2. Clear any lingering ghost interrupts on Port 2 (where HOST_INTR usually lives)
+    // 2. Clear any lingering ghost interrupts on Port 2
     P2->IFG = 0;
 
     // 3. Enable Global Interrupts
     EnableInterrupts();
     Interrupt_enableMaster();
 
-    // 4. THE FIX: Give the CC3100 Wi-Fi chip 100ms to physically boot and stabilize
+    // 4. Give Wi-Fi chip time to boot
     Clock_Delay1ms(100);
 
     // --- WI-FI & MQTT INITIALIZATION BLOCK ---
     retVal = initializeAppVariables();
     UART0_Init();
 
-    // Now the Wi-Fi chip is fully awake and ready to trigger clean edge interrupts
     retVal = configureSimpleLinkToDefaultState();
     if(retVal < 0) LOOP_FOREVER();
 
@@ -216,7 +281,6 @@ int main(void){
 
     NewNetwork(&n);
 
-    // Connect using the new server and port 8883
     rc = ConnectNetwork(&n, MQTT_BROKER_SERVER, MQTT_BROKER_PORT);
     if (rc != 0) LOOP_FOREVER();
 
@@ -228,7 +292,6 @@ int main(void){
 
     rc = MQTTConnect(&hMQTTClient, &cdata);
     if (rc != 0) {
-        //CLI_Write(" MQTT Connect Failed! \n\r");
         LOOP_FOREVER();
     }
     // -----------------------------------------
@@ -243,12 +306,14 @@ int main(void){
     OPT3101_Setup();
     OPT3101_CalibrateInternalCrosstalk();
 
+    Reflectance_Init(); // Initialize line sensor pins
+
     // 3. Initialize Odometry State
     Odometry_Init(0, 0, 0);
     Odometry_SetPower(3000, 1500);
 
-    // 4. Start Timer Interrupts
-    TimerA1_Init(&Background_OdometryTask, 960000);
+    // 4. Start Timer Multiplexing
+    TimerA1_Init(&Background_1ms_Task, 48000);
 
     uint32_t distLeft, distCenter, distRight;
     int32_t myX, myY, myTheta;
@@ -271,30 +336,37 @@ int main(void){
                 systemState = 1;
                 startTimeMs = systemTimeMs; // Mark the start time
                 crashCount = 0;             // Reset crash counter for the new run
-
+                finish_line_crossed = 0;    // Reset finish line flag
             }
             else if (command == 's' || command == 'S') {
                 systemState = 0;
                 Motor_Stop(); // Hard stop immediately
                 messageSend(); // Transmit telemetry data to Node-RED
-
             }
         }
 
         // --- Tuning Parameters for P-Control ---
-        int32_t baseSpeed = 3000; // Normal driving speed
-        int32_t Kp = 10;          // Proportional Gain (Start around 5-10 and tune)
-        int32_t maxSpeed = 5000;  // Absolute maximum PWM to prevent runaways
+        int32_t baseSpeed = 5000; // Normal driving speed
+        int32_t Kp = 10;          // Proportional Gain
         int32_t minSpeed = 1000;  // Minimum PWM to prevent stalling
 
         // --- Execute Robot Logic Based on State ---
         if(systemState == 1){
+
+            // --- Black Line Finish Detection ---
+            if (finish_line_crossed == 1) {
+                finish_line_crossed = 0; // Clear the flag
+                Motor_Stop();
+                systemState = 0;
+                messageSend(); // Transmit final telemetry data to Node-RED
+                continue;      // Skip the rest of the movement loop
+            }
+
             distLeft = OPT3101_GetLeft();
             distCenter = OPT3101_GetCenter();
             distRight = OPT3101_GetRight();
             Odometry_Get(&myX, &myY, &myTheta);
 
-            // Goal Check (Now effectively infinite with 2147483647)
             if(myX >= GOAL_X_COORD) {
                 Motor_Stop();
                 systemState = 0;
@@ -305,17 +377,12 @@ int main(void){
             }
             // Proportional Wall Following
             else {
-                // 1. Calculate Error (+ means too close to right wall, - means too far)
                 int32_t error = DESIRED_DISTANCE - distRight;
-
-                // 2. Calculate Proportional Adjustment
                 int32_t turnAdjustment = Kp * error;
 
-                // 3. Apply to wheels (If too close, left wheel slows, right wheel speeds up)
                 int32_t leftPWM = baseSpeed - turnAdjustment;
                 int32_t rightPWM = baseSpeed + turnAdjustment;
 
-                // 4. Clamp the PWM values to prevent integer overflow or motor stalling
                 if (leftPWM > maxSpeed) leftPWM = maxSpeed;
                 if (leftPWM < minSpeed) leftPWM = minSpeed;
                 if (rightPWM > maxSpeed) rightPWM = maxSpeed;
@@ -323,18 +390,11 @@ int main(void){
 
                 Motor_Forward(leftPWM, rightPWM);
             }
-
-            if (Bump_Read() != 0) {
-                Motor_Stop();
-                systemState = 0;
-                crashCount++;
-            }
         }
         else {
             Motor_Stop();
         }
 
-        // Remaining 10ms delay (Yield already took 10ms, total loop ~20ms)
         Clock_Delay1ms(10);
     }
 }
@@ -413,13 +473,6 @@ static _i32 initializeAppVariables() {
     g_Status = 0;
     pal_Memset(&g_AppData, 0, sizeof(g_AppData));
     return SUCCESS;
-}
-
-static void displayBanner() {
-   // CLI_Write("\n\r\n\r");
-   /// CLI_Write(" MQTT Robot Integration - Version ");
-   // CLI_Write(APPLICATION_VERSION);
-   // CLI_Write("\n\r*******************************************************************************\n\r");
 }
 
 static void generateUniqueID() {
