@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h> // Added for snprintf
 
 // --- Primary Hardware Includes ---
 #include "msp.h"
@@ -26,20 +27,19 @@
 // ============================================================================
 
 // --- Hardware Constraints ---
-#define DESIRED_DISTANCE 250   // mm from the right wall
-#define GOAL_X_COORD 2000000   // 2 meters (units of 0.0001cm)
+#define DESIRED_DISTANCE 350   // mm from the right wall
+#define GOAL_X_COORD 2147483647   // 2 meters (units of 0.0001cm)
 
 // --- Wi-Fi Settings ---
-#define SSID_NAME       "ECE DESIGN LAB 2.4"       /* Access point name to connect to. */
-#define SEC_TYPE        SL_SEC_TYPE_WPA_WPA2     /* Security type of the Access piont */
-#define PASSKEY         "ecedesignlab12345"   /* Password in case of secure AP */
-#define PASSKEY_LEN     pal_Strlen(PASSKEY)  /* Password length in case of secure AP */
+#define SSID_NAME       "GoyalPhone"
+#define SEC_TYPE        SL_SEC_TYPE_WPA_WPA2
+#define PASSKEY         "13572468"
+#define PASSKEY_LEN     pal_Strlen(PASSKEY)
 
 // --- MQTT Settings ---
 #define MQTT_BROKER_SERVER  "mqtt-dashboard.com"
-#define SUBSCRIBE_TOPIC "newTopic"
 #define PUBLISH_TOPIC "testingtesting12345"
-#define BUFF_SIZE 32
+#define BUFF_SIZE 64 // Increased from 32 to fit the JSON telemetry string
 #define APPLICATION_VERSION "1.0.0"
 
 // --- SimpleLink Macros ---
@@ -49,7 +49,6 @@
 #define MAX_SEND_RCV_SIZE   1024
 #define min(X,Y) ((X) < (Y) ? (X) : (Y))
 
-/* Application specific status/error codes */
 typedef enum{
     DEVICE_NOT_IN_STATION_MODE = -0x7D0,
     HTTP_SEND_ERROR = DEVICE_NOT_IN_STATION_MODE - 1,
@@ -59,21 +58,27 @@ typedef enum{
 } e_AppStatusCodes;
 
 // ============================================================================
-// GLOBAL VARIABLES
+// GLOBAL VARIABLES & TELEMETRY
 // ============================================================================
 
 // 0 = STOPPED, 1 = RUNNING
 int systemState = 0;
 
+// --- Telemetry Trackers ---
+volatile uint32_t systemTimeMs = 0; // Tracks total system uptime in ms
+uint32_t startTimeMs = 0;           // Snapshot of time when 'f' is pressed
+uint32_t crashCount = 0;            // Number of bump sensor hits
+uint32_t maxSpeed = 4500;           // Base max PWM defined by your wall following logic
+
 // --- MQTT / SimpleLink Globals ---
 volatile int publishID = 0;
 unsigned char macAddressVal[SL_MAC_ADDR_LEN];
 unsigned char macAddressLen = SL_MAC_ADDR_LEN;
-char macStr[18];        // Formatted MAC Address String
-char uniqueID[9];       // Unique ID generated from TLV RAND NUM and MAC Address
+char macStr[18];
+char uniqueID[9];
 
 Network n;
-Client hMQTTClient;     // MQTT Client
+Client hMQTTClient;
 
 _u32  g_Status = 0;
 struct{
@@ -92,7 +97,7 @@ static _i32 establishConnectionWithAP();
 static _i32 configureSimpleLinkToDefaultState();
 static _i32 initializeAppVariables();
 static void displayBanner();
-static void messageArrived(MessageData*);
+static void messageSend(); // Replaced messageArrived
 static void generateUniqueID();
 
 // ============================================================================
@@ -108,8 +113,7 @@ void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent) {
             CLR_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
             CLR_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
             break;
-        default:
-            break;
+        default: break;
     }
 }
 
@@ -119,8 +123,7 @@ void SimpleLinkNetAppEventHandler(SlNetAppEvent_t *pNetAppEvent) {
         case SL_NETAPP_IPV4_IPACQUIRED_EVENT:
             SET_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
             break;
-        default:
-            break;
+        default: break;
     }
 }
 
@@ -135,29 +138,38 @@ void SimpleLinkSockEventHandler(SlSockEvent_t *pSock) {}
 // Runs exactly every 20ms to accurately integrate tachometer counts
 void Background_OdometryTask(void){
     UpdatePosition();
+    systemTimeMs += 20; // Increment global time tracker by 20ms
 }
 
-// Called when a subscribed MQTT topic receives a message.
-static void messageArrived(MessageData* data) {
-    char buf[BUFF_SIZE];
+// Packages the 3 global variables and broadcasts them to Node-RED
+static void messageSend(void) {
+    char payload[BUFF_SIZE];
+    uint32_t activeRunTime = systemTimeMs - startTimeMs; // Calculate duration
 
-    if (data->topicName->lenstring.len >= BUFF_SIZE) return;
-    if (data->message->payloadlen >= BUFF_SIZE) return;
+    // Format telemetry as a JSON string
+    snprintf(payload, BUFF_SIZE, "{\"speed\":%d,\"time\":%d,\"crashes\":%d}",
+             maxSpeed, activeRunTime, crashCount);
 
-    // Isolate payload
-    strncpy(buf, data->message->payload, min(BUFF_SIZE, data->message->payloadlen));
-    buf[data->message->payloadlen] = 0; // Null-terminate
+    MQTTMessage msg;
+    msg.dup = 0;
+    msg.id = 0;
+    msg.payload = payload;
+    msg.payloadlen = strlen(payload);
+    msg.qos = QOS0;
+    msg.retained = 0;
 
-    char *tok = strtok(buf, " ");
-
-    // Link MQTT commands directly to the State Machine
-    if (strcmp(tok, "go") == 0) {
-        systemState = 1;
+    // Publish to the MQTT Broker
+    int rc = MQTTPublish(&hMQTTClient, PUBLISH_TOPIC, &msg);
+    if (rc != 0) {
+        CLI_Write(" Failed to publish telemetry \n\r");
+    } else {
+        CLI_Write(" Telemetry published! \n\r");
     }
-    else if (strcmp(tok, "stop") == 0) {
-        systemState = 0;
-        Motor_Stop(); // Failsafe stop
-    }
+}
+
+// Catch Unhandled Port 4 Interrupts (Bump Sensors)
+void PORT4_IRQHandler(void) {
+    P4->IFG = 0; // Clear all interrupt flags for Port 4 to prevent Default_Handler crash
 }
 
 // ============================================================================
@@ -175,13 +187,9 @@ int main(void){
     EnableInterrupts();
     Interrupt_enableMaster();
 
-
-
     // --- WI-FI & MQTT INITIALIZATION BLOCK ---
     retVal = initializeAppVariables();
-
     CLI_Configure();
-
     displayBanner();
 
     retVal = configureSimpleLinkToDefaultState();
@@ -209,12 +217,6 @@ int main(void){
 
     rc = MQTTConnect(&hMQTTClient, &cdata);
     if (rc != 0) LOOP_FOREVER();
-
-    rc = MQTTSubscribe(&hMQTTClient, SUBSCRIBE_TOPIC, QOS0, messageArrived);
-    if (rc != 0) LOOP_FOREVER();
-
-    rc = MQTTSubscribe(&hMQTTClient, uniqueID, QOS0, messageArrived);
-    if (rc != 0) LOOP_FOREVER();
     // -----------------------------------------
 
     // 2. Initialize Robot Hardware Peripherals
@@ -232,9 +234,8 @@ int main(void){
     Odometry_Init(0, 0, 0);
     Odometry_SetPower(3000, 1500);
 
-    // 4. Start Timer Interrupts (After blocking Wi-Fi setup is complete)
+    // 4. Start Timer Interrupts
     TimerA1_Init(&Background_OdometryTask, 960000);
-
 
     uint32_t distLeft, distCenter, distRight;
     int32_t myX, myY, myTheta;
@@ -245,33 +246,29 @@ int main(void){
     // ========================================================================
     while(1){
 
-        // 1. Service MQTT Client (Non-blocking, waits up to 10ms for packets)
+        // 1. Service MQTT Client (Keepalive ping)
         rc = MQTTYield(&hMQTTClient, 10);
         if (rc != 0) LOOP_FOREVER(); // Connection lost
 
-        // 2. Publish Unique ID if triggered (e.g. if you add a button flag later)
-        if (publishID) {
-            MQTTMessage msg;
-            msg.dup = 0; msg.id = 0; msg.payload = uniqueID;
-            msg.payloadlen = 8; msg.qos = QOS0; msg.retained = 0;
-            rc = MQTTPublish(&hMQTTClient, PUBLISH_TOPIC, &msg);
-            if (rc == 0) publishID = 0;
-        }
-
-        // 3. Service UART Bluetooth Commands (Non-blocking check)
+        // 2. Service UART Bluetooth Commands
         if((EUSCI_A0->IFG & 0x01) != 0) {
             command = UART0_InChar();
 
             if (command == 'f' || command == 'F') {
                 systemState = 1;
+                startTimeMs = systemTimeMs; // Mark the start time
+                crashCount = 0;             // Reset crash counter for the new run
+
             }
             else if (command == 's' || command == 'S') {
                 systemState = 0;
                 Motor_Stop(); // Hard stop immediately
+                messageSend(); // Transmit telemetry data to Node-RED
+
             }
         }
 
-        // 4. Execute Robot Logic Based on State
+        // 3. Execute Robot Logic Based on State
         if(systemState == 1){
             distLeft = OPT3101_GetLeft();
             distCenter = OPT3101_GetCenter();
@@ -283,21 +280,23 @@ int main(void){
                 systemState = 0;
             }
             else if(distCenter < 200) {
-                Motor_Left(2000, 2000);
+                Motor_Left(4000, 4000);
             }
             else if(distRight < (DESIRED_DISTANCE - 50)) {
-                Motor_Forward(2500, 1500);
+                Motor_Forward(4500, 3500);
             }
             else if(distRight > (DESIRED_DISTANCE + 50)) {
-                Motor_Forward(1500, 2500);
+                Motor_Forward(3500, 4500);
             }
             else {
                 Motor_Forward(2000, 2000);
             }
 
+            // Bump Sensor Logic
             if (Bump_Read() != 0) {
-               // Motor_Stop();
-               // systemState = 0;
+                Motor_Stop();
+                Clock_Delay1ms(500);
+                Motor_Backward(4000,1000);
             }
         }
         else {
