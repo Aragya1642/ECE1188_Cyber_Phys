@@ -9,6 +9,10 @@
 #include "..\inc\TimerA1.h"
 #include "..\inc\opt3101.h"
 #include "..\inc\I2CB1.h"
+#include "..\inc\UART0.h"
+
+// 0 = STOPPED, 1 = RUNNING
+int systemState = 0;
 
 // --- Hardware Constraints ---
 #define DESIRED_DISTANCE 250   // mm from the right wall
@@ -26,6 +30,7 @@ int main(void){
     Motor_Init();
     Tachometer_Init();
     Bump_Init();
+    UART0_Init();
 
     I2CB1_Init(30); // Initialize I2C with prescaler 30 (400 kHz baud rate)
 
@@ -48,49 +53,62 @@ int main(void){
     uint32_t distLeft, distCenter, distRight;
     int32_t myX, myY, myTheta;
 
+    char command;
+
     while(1){
-        // --- A. Read Sensors ---
-        // Get distances to walls
-        distLeft = OPT3101_GetLeft();
-        distCenter = OPT3101_GetCenter();
-        distRight = OPT3101_GetRight();
 
-        // Get current coordinates from the background odometry task
-        Odometry_Get(&myX, &myY, &myTheta);
+        // NON-BLOCKING CHECK: Only attempt to read if a character is available in the buffer
+        if((EUSCI_A0->IFG & 0x01) != 0) {
+            command = UART0_InChar();
 
-        // --- B. Check Navigation Goals ---
-        // Has the robot navigated to the target X coordinate while following the wall?
-        if(myX >= GOAL_X_COORD) {
-            Motor_Stop();
-            DisableInterrupts(); // Reached goal, shut down
-            while(1);
+            if (command == 'f' || command == 'F') {
+                systemState = 1;
+            }
+            else if (command == 's' || command == 'S') {
+                systemState = 0;
+                Motor_Stop(); // Hard stop immediately
+            }
         }
 
-        // --- C. Wall Following Control Logic (Right Wall FSM) ---
-        // If an obstacle is directly ahead, turn left away from it
-        if(distCenter < 200) {
-            Motor_Left(2000, 2000);
+        // --- Execute Robot Logic Based on State ---
+        if(systemState == 1){
+            // Get distances to walls
+            distLeft = OPT3101_GetLeft();
+            distCenter = OPT3101_GetCenter();
+            distRight = OPT3101_GetRight();
+            Odometry_Get(&myX, &myY, &myTheta);
+
+            // Goal Check
+            if(myX >= GOAL_X_COORD) {
+                Motor_Stop();
+                systemState = 0; // Change state to STOPPED
+            }
+            // Wall Following Logic
+            else if(distCenter < 200) {
+                Motor_Left(2000, 2000);
+            }
+            else if(distRight < (DESIRED_DISTANCE - 50)) {
+                Motor_Forward(2500, 1500); // Right wheel faster, steer left
+            }
+            else if(distRight > (DESIRED_DISTANCE + 50)) {
+                Motor_Forward(1500, 2500); // Left wheel faster, steer right
+            }
+            else {
+                Motor_Forward(2000, 2000); // Drive straight
+            }
+
+            // Bump Sensors
+            if (Bump_Read() != 0) {
+                Motor_Stop();
+                systemState = 0; // Stop the system if a collision occurs
+            }
         }
-        // If we are getting too close to the right wall, steer left slightly
-        else if(distRight < (DESIRED_DISTANCE - 50)) {
-            Motor_Forward(2500, 1500); // Right wheel faster than left
-        }
-        // If we are getting too far from the right wall, steer right slightly
-        else if(distRight > (DESIRED_DISTANCE + 50)) {
-            Motor_Forward(1500, 2500); // Left wheel faster than right
-        }
-        // If we are in the "sweet spot", drive straight
         else {
-            Motor_Forward(2000, 2000);
+            // If systemState is 0, ensure motors stay off
+            Motor_Stop();
         }
 
-        // --- D. Safety Checking ---
-      //  if (Bump_Read() != 0) {
-      //      Motor_Stop();
-            // Implement collision recovery/reversal here
-       // }
-
-        // Brief delay before reading I2C sensors again (e.g., 10-30ms)
+        // Brief delay before reading I2C sensors again (e.g., 20ms)
         Clock_Delay1ms(20);
     }
 }

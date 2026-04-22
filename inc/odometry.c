@@ -47,7 +47,7 @@ policies, either expressed or implied, of the FreeBSD Project.
 #include "..\inc\odometry.h"
 #include "..\inc\Motor.h"
 #include "..\inc\Tachometer.h"
-#include "..\inc\SSD1306.h"
+#include "..\inc\.h"
 #include "..\inc\LaunchPad.h"
 #include "..\inc\bump.h"
 #include "..\inc\clock.h"
